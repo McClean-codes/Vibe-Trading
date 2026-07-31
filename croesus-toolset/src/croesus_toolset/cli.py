@@ -230,6 +230,90 @@ def cmd_risk_xray(args):
     return 0
 
 
+
+
+def _parse_window(window: str) -> int:
+    """Parse a window string like '30d', '7d', '90d' to days."""
+    window = window.strip().lower()
+    if window.endswith("d"):
+        return int(window[:-1])
+    if window.endswith("w"):
+        return int(window[:-1]) * 7
+    if window.endswith("m"):
+        return int(window[:-1]) * 30
+    return int(window)
+
+
+def _fetch_close_prices(symbol: str, interval: str, days: int = 30):
+    """Fetch close prices for a symbol. Returns pd.Series or None."""
+    try:
+        df = _fetch_ohlcv_yfinance(symbol, interval, days)
+        if df is None or df.empty:
+            return None
+        if "Close" in df.columns:
+            return df["Close"].reset_index(drop=True)
+        elif "close" in df.columns:
+            return df["close"].reset_index(drop=True)
+    except (ImportError, ValueError):
+        pass
+    return None
+
+
+def cmd_gap_safe_returns(args):
+    """Compute gap-safe bar returns for an asset."""
+    from croesus_toolset.backtest import gap_safe_bar_returns
+    close = _fetch_close_prices(args.asset, args.interval, days=_parse_window(args.window))
+    if close is None or len(close) < 2:
+        print(json.dumps({"ok": False, "error": f"Insufficient data for {args.asset}"}))
+        return 1
+    result = gap_safe_bar_returns(close, halted_threshold=args.threshold)
+    halted_mask = result.attrs.get("halted_mask", None)
+    output = {
+        "ok": True, "symbol": args.asset, "interval": args.interval,
+        "window": args.window, "halted_threshold": args.threshold,
+        "bars": len(result), "returns": result.tolist(),
+        "halted_bars": int(halted_mask.sum()) if halted_mask is not None else 0,
+        "mean_return": float(result.mean()), "std_return": float(result.std()),
+    }
+    print(json.dumps(output, ensure_ascii=False, default=str))
+    return 0
+
+
+def cmd_benchmark_returns(args):
+    """Compute sign-safe benchmark returns for an asset."""
+    from croesus_toolset.backtest import sign_safe_benchmark
+    close = _fetch_close_prices(args.asset, args.interval, days=_parse_window(args.window))
+    if close is None or len(close) < 2:
+        print(json.dumps({"ok": False, "error": f"Insufficient data for {args.asset}"}))
+        return 1
+    result = sign_safe_benchmark(close)
+    total_return = float((1 + result).prod() - 1)
+    output = {
+        "ok": True, "symbol": args.asset, "interval": args.interval,
+        "window": args.window, "bars": len(result), "total_return": total_return,
+        "mean_return": float(result.mean()), "std_return": float(result.std()),
+    }
+    print(json.dumps(output, ensure_ascii=False, default=str))
+    return 0
+
+
+def cmd_liquidation_price(args):
+    """Compute USD-M perpetual liquidation price."""
+    from croesus_toolset.backtest import usdm_liquidation_price
+    try:
+        liq = usdm_liquidation_price(args.entry, args.leverage, args.side, args.margin)
+    except ValueError as exc:
+        print(json.dumps({"ok": False, "error": str(exc)}))
+        return 1
+    output = {
+        "ok": True, "entry_price": args.entry, "leverage": args.leverage,
+        "side": args.side, "margin_type": args.margin,
+        "liquidation_price": liq, "distance_pct": abs(liq - args.entry) / args.entry * 100,
+    }
+    print(json.dumps(output, ensure_ascii=False, default=str))
+    return 0
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog="croesus",
@@ -250,12 +334,38 @@ def main():
     rx.add_argument("--format", choices=["json", "markdown"], default="json", help="Output format")
     rx.add_argument("--out-dir", default=None, help="Write risk_xray.json and risk_xray.md to this directory")
 
+    # gap-safe-returns
+    gsr = sub.add_parser("gap-safe-returns", help="Compute gap-safe bar returns for an asset")
+    gsr.add_argument("--asset", required=True, help="Trading symbol (e.g. BTC-USD)")
+    gsr.add_argument("--interval", default="1h", help="Bar interval (1h, 1d, etc.)")
+    gsr.add_argument("--window", default="30d", help="Data window (e.g. 30d, 90d)")
+    gsr.add_argument("--threshold", type=int, default=5, help="Halted threshold (default: 5)")
+
+    # benchmark-returns
+    br = sub.add_parser("benchmark-returns", help="Compute sign-safe benchmark returns for an asset")
+    br.add_argument("--asset", required=True, help="Trading symbol (e.g. BTC-USD)")
+    br.add_argument("--interval", default="1d", help="Bar interval (1h, 1d, etc.)")
+    br.add_argument("--window", default="90d", help="Data window (e.g. 30d, 90d)")
+
+    # liquidation-price
+    lp = sub.add_parser("liquidation-price", help="Compute USD-M perpetual liquidation price")
+    lp.add_argument("--entry", type=float, required=True, help="Entry price (e.g. 60000)")
+    lp.add_argument("--leverage", type=int, required=True, help="Leverage (e.g. 10)")
+    lp.add_argument("--side", choices=["long", "short"], required=True, help="Position side")
+    lp.add_argument("--margin", choices=["isolated", "cross"], required=True, help="Margin type")
+
     args = parser.parse_args()
 
     if args.command == "fetch-indicator":
         sys.exit(cmd_fetch_indicator(args))
     elif args.command == "risk-xray":
         sys.exit(cmd_risk_xray(args))
+    elif args.command == "gap-safe-returns":
+        sys.exit(cmd_gap_safe_returns(args))
+    elif args.command == "benchmark-returns":
+        sys.exit(cmd_benchmark_returns(args))
+    elif args.command == "liquidation-price":
+        sys.exit(cmd_liquidation_price(args))
     else:
         parser.print_help()
         sys.exit(1)
