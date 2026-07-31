@@ -206,11 +206,13 @@ def _parse_window(window: str) -> int:
 def _fetch_close_prices(symbol: str, interval: str, days: int = 30):
     """Fetch close prices for a symbol. Returns pd.Series or None."""
     try:
-        df = _get_loader_and_df(symbol, interval, "yfinance")
-        if "close" in df.columns:
-            return df["close"].reset_index(drop=True)
-        elif "Close" in df.columns:
+        df = _fetch_ohlcv_yfinance(symbol, interval, days)
+        if df is None or df.empty:
+            return None
+        if "Close" in df.columns:
             return df["Close"].reset_index(drop=True)
+        elif "close" in df.columns:
+            return df["close"].reset_index(drop=True)
     except (ImportError, ValueError):
         pass
     return None
