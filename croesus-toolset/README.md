@@ -47,11 +47,22 @@ print(render_risk_xray_markdown(report))
 # Fetch indicator for a symbol
 croesus fetch-indicator --asset BTC-USD --indicator rsi_14 --interval 1d
 
+# Fetch indicator via ccxt (Binance)
+croesus fetch-indicator --asset BTC/USDT --indicator rsi_21 --loader ccxt --exchange binance
+
+# Fetch alpha-zoo factors
+croesus fetch-factors --asset BTC-USD --factors rsi_14,momentum_12_1,volatility_30 --window 90d
+
 # Portfolio risk x-ray
 croesus risk-xray --portfolio ./holdings.json
 
 # Risk x-ray with artifact output
 croesus risk-xray --portfolio ./holdings.json --out-dir ./croesus_runs/run-001/
+
+# Advanced backtest commands
+croesus gap-safe-returns --asset BTC-USD --interval 1h --window 30d
+croesus benchmark-returns --asset BTC-USD --window 90d
+croesus liquidation-price --entry 60000 --leverage 10 --side long --margin isolated
 ```
 
 ### Exit codes
@@ -117,15 +128,16 @@ pytest tests/ -v
 | Source | Destination | Description |
 |--------|-------------|-------------|
 | `agent/src/tools/technical_indicator_tool.py` | `src/croesus_toolset/indicators.py` | RSI, MACD, Bollinger, SMA, EMA (pure math) |
-| `agent/backtest/metrics.py` | `src/croesus_toolset/backtest.py` | Bar returns, Sharpe, max drawdown |
+| `agent/backtest/metrics.py` | `src/croesus_toolset/backtest.py` | Bar returns, Sharpe, max drawdown, gap-safe, sign-safe, liquidation |
 | `agent/backtest/risk_xray.py` | `src/croesus_toolset/risk.py` | Portfolio risk x-ray (concentration, vol, drawdown, tail, diversification) |
+| `agent/backtest/loaders/` | `src/croesus_toolset/loaders/` | Data loaders (yfinance, ccxt) |
+| `agent/src/factors/zoo/` | `src/croesus_toolset/factors/` | Alpha-zoo factor subset (alpha, momentum, reversal, risk, technical) |
 
 ## What was NOT lifted
 
 - `agent/src/cli/`, `agent/api_server.py`, `agent/mcp_server.py` — agent runtime
 - `agent/src/swarm/`, `agent/src/chat/` — LLM loop / adapters
-- `agent/src/factors/zoo/` — Alpha Zoo (452 factors, not yet included)
-- `agent/backtest/loaders/` — data loader pipeline (yfinance, akshare, etc.)
+- `agent/src/factors/zoo/` — full Alpha Zoo (452 factors; only subset included)
 - `agent/backtest/engines/` — backtest execution engines
 - `frontend/`, `Dockerfile`, `requirements-lock.txt`
 

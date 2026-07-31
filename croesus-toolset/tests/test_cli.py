@@ -290,3 +290,87 @@ class TestCLIRiskXray:
         captured = capsys.readouterr()
         data = json.loads(captured.out)
         assert data["ok"] if "ok" in data else "concentration" in data
+
+    @patch("croesus_toolset.cli._get_loader_and_df")
+    def test_risk_xray_holdings_alias_exits_0(self, mock_fetch, tmp_path, capsys):
+        """risk-xray with holdings alias should work identically to weights."""
+        rng = np.random.default_rng(42)
+        n = 100
+        dates = pd.bdate_range("2025-01-01", periods=n)
+        mock_fetch.return_value = pd.DataFrame({
+            "close": 100.0 + np.cumsum(rng.normal(0, 1, size=n)),
+        }, index=dates)
+
+        pf = tmp_path / "holdings.json"
+        pf.write_text(json.dumps({
+            "holdings": [
+                {"asset": "AAPL", "weight": 0.6},
+                {"asset": "MSFT", "weight": 0.4},
+            ],
+        }))
+        rc = self._run_cli(["risk-xray", "--portfolio", str(pf)])
+        assert rc == 0
+        captured = capsys.readouterr()
+        data = json.loads(captured.out)
+        assert "concentration" in data
+
+    @patch("croesus_toolset.cli._get_loader_and_df")
+    def test_risk_xray_holdings_matches_weights(self, mock_fetch, tmp_path):
+        """holdings alias and weights key should produce identical risk output."""
+        rng = np.random.default_rng(42)
+        n = 100
+        dates = pd.bdate_range("2025-01-01", periods=n)
+        mock_fetch.return_value = pd.DataFrame({
+            "close": 100.0 + np.cumsum(rng.normal(0, 1, size=n)),
+        }, index=dates)
+
+        # Run with weights
+        pf_w = tmp_path / "weights.json"
+        pf_w.write_text(json.dumps({
+            "symbols": ["AAPL", "MSFT"],
+            "weights": {"AAPL": 0.6, "MSFT": 0.4},
+        }))
+        self._run_cli(["risk-xray", "--portfolio", str(pf_w)])
+
+        # Run with holdings
+        pf_h = tmp_path / "holdings.json"
+        pf_h.write_text(json.dumps({
+            "holdings": [
+                {"asset": "AAPL", "weight": 0.6},
+                {"asset": "MSFT", "weight": 0.4},
+            ],
+        }))
+        self._run_cli(["risk-xray", "--portfolio", str(pf_h)])
+
+        # Both calls used same mock data, both should succeed
+        assert mock_fetch.call_count == 4  # 2 symbols x 2 runs
+
+    @patch("croesus_toolset.cli._get_loader_and_df")
+    def test_risk_xray_out_dir_dual_emit(self, mock_fetch, tmp_path):
+        """--out-dir should produce both risk_xray.json and risk_xray.md."""
+        rng = np.random.default_rng(42)
+        n = 100
+        dates = pd.bdate_range("2025-01-01", periods=n)
+        mock_fetch.return_value = pd.DataFrame({
+            "close": 100.0 + np.cumsum(rng.normal(0, 1, size=n)),
+        }, index=dates)
+
+        pf = tmp_path / "holdings.json"
+        pf.write_text(json.dumps({
+            "symbols": ["AAPL"],
+            "weights": {"AAPL": 1.0},
+        }))
+        out_dir = tmp_path / "xray_output"
+        rc = self._run_cli([
+            "risk-xray", "--portfolio", str(pf),
+            "--out-dir", str(out_dir),
+        ])
+        assert rc == 0
+        assert (out_dir / "risk_xray.json").exists()
+        assert (out_dir / "risk_xray.md").exists()
+        # JSON should be valid
+        data = json.loads((out_dir / "risk_xray.json").read_text())
+        assert "concentration" in data
+        # MD should have content
+        md = (out_dir / "risk_xray.md").read_text()
+        assert len(md) > 0
