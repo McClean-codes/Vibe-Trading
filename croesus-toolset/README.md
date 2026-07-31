@@ -49,9 +49,26 @@ croesus fetch-indicator --asset BTC-USD --indicator rsi_14 --interval 1d
 
 # Portfolio risk x-ray
 croesus risk-xray --portfolio ./holdings.json
+
+# Risk x-ray with artifact output
+croesus risk-xray --portfolio ./holdings.json --out-dir ./croesus_runs/run-001/
 ```
 
+### Exit codes
+
+| Code | Meaning |
+|------|---------|
+| `0` | Success (`{"ok": true}` in JSON output) |
+| `1` | Data/logic error (`{"ok": false}` — no data, bad portfolio, etc.) |
+| `2` | Argument error (missing flag, unknown subcommand — argparse default) |
+
+This makes the CLI cron-safe: a cron job that treats non-zero exit as an alert
+will fire correctly on data-fetch failures (exit 1) and argument mistakes (exit 2),
+while a clean run exits 0.
+
 ### holdings.json format
+
+**Canonical form** (recommended):
 
 ```json
 {
@@ -59,6 +76,34 @@ croesus risk-xray --portfolio ./holdings.json
   "weights": {"AAPL": 0.4, "MSFT": 0.3, "GOOG": 0.3}
 }
 ```
+
+**Alias form** (also accepted):
+
+```json
+{
+  "holdings": [
+    {"asset": "AAPL", "weight": 0.4},
+    {"asset": "MSFT", "weight": 0.3},
+    {"asset": "GOOG", "weight": 0.3}
+  ]
+}
+```
+
+Both formats produce identical risk x-ray output. The `weights` key is the
+canonical form; `holdings` is an alias that translates internally.
+
+### risk-xray artifact emitter
+
+When `--out-dir <path>` is specified, `risk-xray` writes two files alongside
+the JSON printed to stdout:
+
+| File | Contents |
+|------|----------|
+| `risk_xray.json` | Full machine-readable risk report |
+| `risk_xray.md` | Human-friendly summary (concentration, volatility, drawdown, tail risk, diversification) |
+
+Both files land in the same run directory, matching the artifact pair that
+Vibe-Trading produces during portfolio backtests.
 
 ## Tests
 

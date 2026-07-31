@@ -15,6 +15,41 @@ import argparse
 import json
 import sys
 from pathlib import Path
+from typing import Any
+
+
+def parse_portfolio(portfolio: dict[str, Any]) -> tuple[dict[str, float], list[str]]:
+    """Extract weights and symbols from a portfolio dict.
+
+    Accepts two formats:
+      Canonical:  {"symbols": [...], "weights": {"SYM": w, ...}}
+      Alias:      {"holdings": [{"asset": "SYM", "weight": w}, ...]}
+
+    Returns:
+        (weights, symbols) tuple.
+
+    Raises:
+        ValueError: if neither 'weights' nor 'holdings' key is present.
+    """
+    weights = portfolio.get("weights")
+    symbols = portfolio.get("symbols")
+
+    if weights is not None:
+        if symbols is None:
+            symbols = list(weights.keys())
+        return dict(weights), list(symbols)
+
+    holdings = portfolio.get("holdings")
+    if holdings is not None:
+        extracted: dict[str, float] = {}
+        extracted_symbols: list[str] = []
+        for item in holdings:
+            asset = item["asset"]
+            extracted[asset] = float(item["weight"])
+            extracted_symbols.append(asset)
+        return extracted, extracted_symbols
+
+    raise ValueError("Portfolio must have 'weights' or 'holdings' key")
 
 
 def _fetch_ohlcv_yfinance(symbol: str, interval: str, days: int = 30):
@@ -24,7 +59,6 @@ def _fetch_ohlcv_yfinance(symbol: str, interval: str, days: int = 30):
     except ImportError:
         return None
 
-    # Map our interval names to yfinance
     yf_interval = {
         "1m": "1m", "5m": "5m", "15m": "15m", "30m": "30m",
         "1h": "1h", "1H": "1h", "1d": "1d", "1wk": "1wk", "1mo": "1mo",
@@ -56,12 +90,7 @@ def _fetch_ohlcv_ccxt(exchange_id: str, symbol: str, timeframe: str, limit: int 
 
 
 def _detect_fetch_method(symbol: str, interval: str):
-    """Return (method, args) for the best fetch method.
-
-    Strategy: try yfinance first for all symbols (broadest compatibility).
-    ccxt is available as a fallback for crypto when yfinance fails.
-    """
-    # All symbols go through yfinance first — it handles stocks, crypto, forex
+    """Return (method, args) for the best fetch method."""
     return "yfinance", (symbol, interval)
 
 
@@ -75,7 +104,6 @@ def cmd_fetch_indicator(args):
     indicator = args.indicator
     interval = args.interval
 
-    # Fetch data
     method, fetch_args = _detect_fetch_method(symbol, interval)
 
     if method == "ccxt":
@@ -96,7 +124,6 @@ def cmd_fetch_indicator(args):
             print(json.dumps({"ok": False, "error": "No close price column in data"}))
             return 1
 
-    # Compute requested indicator
     indicator_funcs = {
         "rsi_14": lambda c: compute_rsi(c, period=14),
         "rsi": lambda c: compute_rsi(c, period=14),
@@ -145,15 +172,16 @@ def cmd_risk_xray(args):
         print(json.dumps({"ok": False, "error": f"Failed to parse portfolio: {exc}"}))
         return 1
 
-    # Expect {"weights": {"SYM": 0.5, ...}, "symbols": ["SYM", ...]}
-    weights = portfolio.get("weights")
-    symbols = portfolio.get("symbols", list(weights.keys()) if weights else [])
-
-    if not weights:
-        print(json.dumps({"ok": False, "error": "Portfolio must have 'weights' key"}))
+    try:
+        weights, symbols = parse_portfolio(portfolio)
+    except (ValueError, KeyError, TypeError) as exc:
+        print(json.dumps({"ok": False, "error": str(exc)}))
         return 1
 
-    # Fetch close prices for each symbol
+    if not weights:
+        print(json.dumps({"ok": False, "error": "Portfolio must have 'weights' or 'holdings' key"}))
+        return 1
+
     import pandas as pd
     closes_dict = {}
     for sym in symbols:
@@ -182,6 +210,19 @@ def cmd_risk_xray(args):
         print(json.dumps({"ok": False, "error": str(exc)}))
         return 1
 
+    # Dual artifact emitter: write JSON + MD to --out-dir if specified
+    out_dir = getattr(args, "out_dir", None)
+    if out_dir:
+        out_path = Path(out_dir)
+        out_path.mkdir(parents=True, exist_ok=True)
+
+        json_file = out_path / "risk_xray.json"
+        json_file.write_text(json.dumps(report, ensure_ascii=False, default=str, indent=2), encoding="utf-8")
+
+        md_content = render_risk_xray_markdown(report)
+        md_file = out_path / "risk_xray.md"
+        md_file.write_text(md_content, encoding="utf-8")
+
     if args.format == "markdown":
         print(render_risk_xray_markdown(report))
     else:
@@ -207,6 +248,7 @@ def main():
     rx.add_argument("--portfolio", required=True, help="Path to holdings JSON file")
     rx.add_argument("--interval", default="1d", help="Bar interval for price data")
     rx.add_argument("--format", choices=["json", "markdown"], default="json", help="Output format")
+    rx.add_argument("--out-dir", default=None, help="Write risk_xray.json and risk_xray.md to this directory")
 
     args = parser.parse_args()
 

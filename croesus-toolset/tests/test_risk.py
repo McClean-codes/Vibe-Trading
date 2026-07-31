@@ -41,7 +41,6 @@ class TestComputeRiskXray:
         weights = {"A": 0.5, "B": 0.3, "C": 0.2}
         result = compute_risk_xray(closes, weights)
         hhi = result["concentration"]["hhi"]
-        # HHI = sum(w_i^2), 3 equal assets → 1/3, 100% single asset → 1.0
         assert 0.0 < hhi <= 1.0
 
     def test_max_drawdown_is_negative_or_zero(self):
@@ -71,13 +70,11 @@ class TestComputeRiskXray:
         closes = _make_closes(["X", "Y"])
         weights = {"X": 2.0, "Y": 3.0}
         result = compute_risk_xray(closes, weights)
-        # Should succeed (renormalized) and have a warning
         assert len(result.get("warnings", [])) > 0 or result["inputs"]["symbols"] == ["X", "Y"]
 
     def test_skips_symbols_with_insufficient_history(self):
         from croesus_toolset.risk import compute_risk_xray
         closes = _make_closes(["GOOD", "SHORT"], n=100)
-        # Inject NaN so SHORT has only 5 valid bars
         closes.loc[closes.index[:90], "SHORT"] = np.nan
         weights = {"GOOD": 0.5, "SHORT": 0.5}
         result = compute_risk_xray(closes, weights, min_history=30)
@@ -103,3 +100,56 @@ class TestRenderRiskXrayMarkdown:
         report = compute_risk_xray(closes, {"A": 1.0})
         md = render_risk_xray_markdown(report)
         assert "Risk" in md or "risk" in md.lower()
+
+
+# ---------------------------------------------------------------------------
+# holdings alias at risk.py level
+# ---------------------------------------------------------------------------
+
+class TestHoldingsAlias:
+    def test_extract_weights_from_holdings(self):
+        """parse_portfolio should extract weights from holdings alias."""
+        from croesus_toolset.cli import parse_portfolio
+        portfolio = {
+            "holdings": [
+                {"asset": "AAPL", "weight": 0.6},
+                {"asset": "MSFT", "weight": 0.4},
+            ],
+        }
+        weights, symbols = parse_portfolio(portfolio)
+        assert weights == {"AAPL": 0.6, "MSFT": 0.4}
+        assert symbols == ["AAPL", "MSFT"]
+
+    def test_extract_weights_from_weights_key(self):
+        """parse_portfolio should extract weights from canonical weights key."""
+        from croesus_toolset.cli import parse_portfolio
+        portfolio = {
+            "symbols": ["AAPL", "MSFT"],
+            "weights": {"AAPL": 0.6, "MSFT": 0.4},
+        }
+        weights, symbols = parse_portfolio(portfolio)
+        assert weights == {"AAPL": 0.6, "MSFT": 0.4}
+        assert symbols == ["AAPL", "MSFT"]
+
+    def test_holdings_and_weights_same_result(self):
+        """Both formats should produce identical weights dict."""
+        from croesus_toolset.cli import parse_portfolio
+        w_weights, s_weights = parse_portfolio({
+            "symbols": ["A", "B", "C"],
+            "weights": {"A": 0.5, "B": 0.3, "C": 0.2},
+        })
+        w_holdings, s_holdings = parse_portfolio({
+            "holdings": [
+                {"asset": "A", "weight": 0.5},
+                {"asset": "B", "weight": 0.3},
+                {"asset": "C", "weight": 0.2},
+            ],
+        })
+        assert w_weights == w_holdings
+        assert set(s_weights) == set(s_holdings)
+
+    def test_rejects_neither_weights_nor_holdings(self):
+        """Should raise ValueError when neither weights nor holdings present."""
+        from croesus_toolset.cli import parse_portfolio
+        with pytest.raises(ValueError, match="Portfolio must have 'weights' or 'holdings'"):
+            parse_portfolio({"symbols": ["AAPL"]})
