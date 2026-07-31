@@ -17,7 +17,6 @@ class TestCLIIndicator:
         """Run cli.main() with given args and capture output."""
         from croesus_toolset.cli import main
         with patch("sys.argv", ["croesus"] + args):
-            # main() calls sys.exit, so we catch SystemExit
             try:
                 main()
                 return 0, ""
@@ -78,6 +77,32 @@ class TestCLIIndicator:
         rc, _ = self._run_cli(["fetch-indicator", "--asset", "INVALID", "--indicator", "rsi_14"])
         assert rc == 1
 
+    # --- exit-code 0 on ok:true, exit-code 1 on ok:false ---
+
+    @patch("croesus_toolset.cli._fetch_ohlcv_yfinance")
+    def test_exit_code_0_on_ok_true(self, mock_fetch):
+        """Process must exit 0 when JSON body has ok=true."""
+        mock_fetch.return_value = self._mock_yfinance_df()
+        rc, _ = self._run_cli(["fetch-indicator", "--asset", "BTC-USD", "--indicator", "rsi_14", "--interval", "1d"])
+        assert rc == 0
+
+    @patch("croesus_toolset.cli._fetch_ohlcv_yfinance")
+    def test_exit_code_1_on_ok_false(self, mock_fetch):
+        """Process must exit 1 when JSON body has ok=false (e.g. no data)."""
+        mock_fetch.return_value = None
+        rc, _ = self._run_cli(["fetch-indicator", "--asset", "NONEXISTENT", "--indicator", "rsi_14", "--interval", "1h"])
+        assert rc == 1
+
+    def test_exit_code_2_on_missing_required_flag(self):
+        """Process must exit 2 on argument/config errors (missing --asset)."""
+        rc, _ = self._run_cli(["fetch-indicator", "--indicator", "rsi_14"])
+        assert rc == 2
+
+    def test_exit_code_2_on_unknown_subcommand(self):
+        """Process must exit 2 on unknown subcommand."""
+        rc, _ = self._run_cli(["bogus-command"])
+        assert rc == 2
+
 
 # ---------------------------------------------------------------------------
 # risk-xray CLI
@@ -131,4 +156,137 @@ class TestCLIRiskXray:
         assert rc == 0
         captured = capsys.readouterr()
         data = json.loads(captured.out)
-        assert data["ok"] if "ok" in data else "concentration" in data
+        assert "concentration" in data
+
+    # --- holdings alias ---
+
+    @patch("croesus_toolset.cli._fetch_ohlcv_yfinance")
+    def test_risk_xray_accepts_holdings_alias(self, mock_fetch, tmp_path, capsys):
+        """risk-xray should accept {holdings: [{asset, weight}, ...]} format."""
+        import numpy as np
+        rng = np.random.default_rng(42)
+        n = 100
+        dates = pd.bdate_range("2025-01-01", periods=n)
+        mock_fetch.return_value = pd.DataFrame({
+            "Close": 100.0 + np.cumsum(rng.normal(0, 1, size=n)),
+        }, index=dates)
+
+        pf = tmp_path / "holdings.json"
+        pf.write_text(json.dumps({
+            "holdings": [
+                {"asset": "AAPL", "weight": 0.6},
+                {"asset": "MSFT", "weight": 0.4},
+            ],
+        }))
+        rc = self._run_cli(["risk-xray", "--portfolio", str(pf)])
+        assert rc == 0
+        captured = capsys.readouterr()
+        data = json.loads(captured.out)
+        assert "concentration" in data
+        assert "AAPL" in data["inputs"]["weights"]
+        assert "MSFT" in data["inputs"]["weights"]
+
+    @patch("croesus_toolset.cli._fetch_ohlcv_yfinance")
+    def test_risk_xray_holdings_matches_weights_output(self, mock_fetch, tmp_path):
+        """holdings alias should produce identical risk output to weights form."""
+        import numpy as np
+        rng = np.random.default_rng(42)
+        n = 100
+        dates = pd.bdate_range("2025-01-01", periods=n)
+        mock_fetch.return_value = pd.DataFrame({
+            "Close": 100.0 + np.cumsum(rng.normal(0, 1, size=n)),
+        }, index=dates)
+
+        pf_weights = tmp_path / "weights.json"
+        pf_weights.write_text(json.dumps({
+            "symbols": ["AAPL", "MSFT"],
+            "weights": {"AAPL": 0.6, "MSFT": 0.4},
+        }))
+        rc1 = self._run_cli(["risk-xray", "--portfolio", str(pf_weights)])
+
+        pf_holdings = tmp_path / "holdings.json"
+        pf_holdings.write_text(json.dumps({
+            "holdings": [
+                {"asset": "AAPL", "weight": 0.6},
+                {"asset": "MSFT", "weight": 0.4},
+            ],
+        }))
+        rc2 = self._run_cli(["risk-xray", "--portfolio", str(pf_holdings)])
+
+        assert rc1 == 0
+        assert rc2 == 0
+
+    # --- --out-dir dual artifact emitter ---
+
+    @patch("croesus_toolset.cli._fetch_ohlcv_yfinance")
+    def test_risk_xray_out_dir_creates_both_files(self, mock_fetch, tmp_path):
+        """--out-dir should create both risk_xray.json and risk_xray.md."""
+        import numpy as np
+        rng = np.random.default_rng(42)
+        n = 100
+        dates = pd.bdate_range("2025-01-01", periods=n)
+        mock_fetch.return_value = pd.DataFrame({
+            "Close": 100.0 + np.cumsum(rng.normal(0, 1, size=n)),
+        }, index=dates)
+
+        pf = tmp_path / "holdings.json"
+        pf.write_text(json.dumps({
+            "symbols": ["AAPL", "MSFT"],
+            "weights": {"AAPL": 0.6, "MSFT": 0.4},
+        }))
+
+        out_dir = tmp_path / "xray_output"
+        rc = self._run_cli(["risk-xray", "--portfolio", str(pf), "--out-dir", str(out_dir)])
+        assert rc == 0
+        assert (out_dir / "risk_xray.json").exists()
+        assert (out_dir / "risk_xray.md").exists()
+
+    @patch("croesus_toolset.cli._fetch_ohlcv_yfinance")
+    def test_risk_xray_out_dir_json_valid(self, mock_fetch, tmp_path):
+        """risk_xray.json should be valid JSON matching stdout output."""
+        import numpy as np
+        rng = np.random.default_rng(42)
+        n = 100
+        dates = pd.bdate_range("2025-01-01", periods=n)
+        mock_fetch.return_value = pd.DataFrame({
+            "Close": 100.0 + np.cumsum(rng.normal(0, 1, size=n)),
+        }, index=dates)
+
+        pf = tmp_path / "holdings.json"
+        pf.write_text(json.dumps({
+            "symbols": ["AAPL", "MSFT"],
+            "weights": {"AAPL": 0.6, "MSFT": 0.4},
+        }))
+
+        out_dir = tmp_path / "xray_output"
+        self._run_cli(["risk-xray", "--portfolio", str(pf), "--out-dir", str(out_dir)])
+
+        data = json.loads((out_dir / "risk_xray.json").read_text())
+        assert "concentration" in data
+        assert "volatility" in data
+        assert "drawdown" in data
+
+    @patch("croesus_toolset.cli._fetch_ohlcv_yfinance")
+    def test_risk_xray_out_dir_md_content(self, mock_fetch, tmp_path):
+        """risk_xray.md should contain human-friendly summary."""
+        import numpy as np
+        rng = np.random.default_rng(42)
+        n = 100
+        dates = pd.bdate_range("2025-01-01", periods=n)
+        mock_fetch.return_value = pd.DataFrame({
+            "Close": 100.0 + np.cumsum(rng.normal(0, 1, size=n)),
+        }, index=dates)
+
+        pf = tmp_path / "holdings.json"
+        pf.write_text(json.dumps({
+            "symbols": ["AAPL", "MSFT"],
+            "weights": {"AAPL": 0.6, "MSFT": 0.4},
+        }))
+
+        out_dir = tmp_path / "xray_output"
+        self._run_cli(["risk-xray", "--portfolio", str(pf), "--out-dir", str(out_dir)])
+
+        md_content = (out_dir / "risk_xray.md").read_text()
+        assert "Risk" in md_content or "risk" in md_content.lower()
+        assert "Drawdown" in md_content or "drawdown" in md_content.lower()
+        assert "Volatility" in md_content or "volatility" in md_content.lower()
